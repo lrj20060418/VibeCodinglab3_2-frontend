@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { createPlan, getPlan, listPlans, updatePlan } from '../api/plans'
 import { addPlace, deletePlace, listPlaces } from '../api/places'
+import { getLiveWeatherByAdcode, getPlanLiveWeathers } from '../api/weather'
 
 const LAST_OPEN_PLAN_ID_KEY = 'lab3.lastOpenPlanId'
 
@@ -32,6 +33,15 @@ const places = ref([])
 const placesLoading = ref(false)
 const placesError = ref('')
 const addingPlace = ref(false)
+
+const weathers = ref({})
+const weatherErrors = ref({})
+const weatherLoading = ref(false)
+const weatherError = ref('')
+
+const pickWeatherLoading = ref(false)
+const pickWeatherError = ref('')
+const pickWeather = ref(null)
 
 const isEditingExisting = computed(() => Boolean(selectedPlanId.value))
 
@@ -200,6 +210,8 @@ function initAmap() {
           lat,
           adcode: null,
         }
+        pickWeather.value = null
+        pickWeatherError.value = ''
 
         geocoder.getAddress([lng, lat], (status, result) => {
           if (status === 'complete' && result?.info === 'OK') {
@@ -212,6 +224,13 @@ function initAmap() {
               lat,
               adcode,
             }
+
+            if (adcode) {
+              fetchPickWeather(adcode)
+            } else {
+              pickWeather.value = null
+              pickWeatherError.value = '缺少 adcode，无法查询天气'
+            }
           } else {
             selectedPlace.value = {
               name: '选中地点',
@@ -220,6 +239,8 @@ function initAmap() {
               lat,
               adcode: null,
             }
+            pickWeather.value = null
+            pickWeatherError.value = '逆地理编码失败，无法查询天气'
           }
         })
       })
@@ -233,16 +254,79 @@ function initAmap() {
 async function refreshPlaces() {
   placesError.value = ''
   places.value = []
+  weathers.value = {}
+  weatherErrors.value = {}
+  weatherError.value = ''
   if (!selectedPlanId.value) return
 
   placesLoading.value = true
   try {
     places.value = await listPlaces(selectedPlanId.value)
+    await refreshWeathers()
   } catch (e) {
     placesError.value = e?.message || '加载地点失败'
   } finally {
     placesLoading.value = false
   }
+}
+
+async function refreshWeathers() {
+  weatherError.value = ''
+  weathers.value = {}
+  weatherErrors.value = {}
+  if (!selectedPlanId.value) return
+  if (!places.value || places.value.length === 0) return
+
+  weatherLoading.value = true
+  try {
+    const res = await getPlanLiveWeathers(selectedPlanId.value)
+    weathers.value = res.weathers || {}
+    weatherErrors.value = res.errors || {}
+  } catch (e) {
+    weatherError.value = e?.message || '加载天气失败'
+  } finally {
+    weatherLoading.value = false
+  }
+}
+
+async function fetchPickWeather(adcode) {
+  pickWeatherLoading.value = true
+  pickWeatherError.value = ''
+  pickWeather.value = null
+  try {
+    const res = await getLiveWeatherByAdcode(adcode)
+    pickWeather.value = res.weather || null
+  } catch (e) {
+    pickWeatherError.value = e?.message || '选点天气获取失败'
+  } finally {
+    pickWeatherLoading.value = false
+  }
+}
+
+function pickWeatherText() {
+  if (pickWeatherLoading.value) return '天气加载中…'
+  if (pickWeatherError.value) return `天气不可用（${pickWeatherError.value}）`
+  if (!pickWeather.value) return '—'
+  const w = pickWeather.value
+  const t = w.temperature != null ? `${w.temperature}°C` : '—'
+  const s = w.status || '—'
+  const hum = w.humidity != null ? `${w.humidity}%` : '—'
+  const wind =
+    w.wind_direction && w.wind_power ? `${w.wind_direction} ${w.wind_power}` : '—'
+  return `${s} · ${t} · 湿度 ${hum} · 风 ${wind}`
+}
+
+function weatherText(placeId) {
+  const w = weathers.value?.[placeId]
+  if (w) {
+    const t = w.temperature != null ? `${w.temperature}°C` : '—'
+    const s = w.status || '—'
+    return `${s} · ${t}`
+  }
+  const err = weatherErrors.value?.[placeId]
+  if (err) return `天气不可用（${err}）`
+  if (weatherLoading.value) return '天气加载中…'
+  return '—'
 }
 
 const canAddPlace = computed(() => Boolean(selectedPlanId.value && selectedPlace.value && selectedPlace.value.address && selectedPlace.value.address !== '解析中…'))
@@ -453,6 +537,12 @@ onMounted(async () => {
                   <div class="k">adcode</div>
                   <div class="v mono">{{ selectedPlace.adcode }}</div>
                 </div>
+                <div class="pick-row">
+                  <div class="k">实时天气</div>
+                  <div class="v">
+                    <span class="chip">{{ pickWeatherText() }}</span>
+                  </div>
+                </div>
                 <button class="btn primary" type="button" :disabled="!canAddPlace || addingPlace" @click="addSelectedPlace">
                   {{ addingPlace ? '加入中…' : selectedPlanId ? '加入规划' : '请先保存规划' }}
                 </button>
@@ -470,6 +560,10 @@ onMounted(async () => {
               <div v-else-if="places.length === 0" class="state">
                 还没有地点。点击地图选点并“加入规划”。
               </div>
+              <div v-else-if="weatherError" class="notice error" style="margin-bottom: 10px">
+                天气加载失败：{{ weatherError }}
+                <button class="btn small" type="button" style="margin-left: 8px" @click="refreshWeathers">重试</button>
+              </div>
               <ul v-else class="place-list">
                 <li v-for="pl in places" :key="pl.id" class="place-item">
                   <div class="place-main">
@@ -477,6 +571,7 @@ onMounted(async () => {
                     <div class="place-sub">
                       <span class="mono">{{ Number(pl.lng).toFixed(4) }}, {{ Number(pl.lat).toFixed(4) }}</span>
                       <span v-if="pl.adcode" class="mono">adcode {{ pl.adcode }}</span>
+                      <span class="chip">{{ weatherText(pl.id) }}</span>
                     </div>
                     <div class="place-addr" v-if="pl.address">{{ pl.address }}</div>
                   </div>
@@ -826,6 +921,17 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--text);
   margin-bottom: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent-bg) 55%, transparent);
+  color: var(--text-h);
 }
 
 .place-addr {
