@@ -3,6 +3,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { createPlan, getPlan, listPlans, updatePlan } from '../api/plans'
 import { addPlace, deletePlace, listPlaces } from '../api/places'
 import { getLiveWeatherByAdcode, getPlanLiveWeathers } from '../api/weather'
+import { getItinerary, saveItinerary } from '../api/itinerary'
+import { generatePlanSummary } from '../api/ai'
 
 const LAST_OPEN_PLAN_ID_KEY = 'lab3.lastOpenPlanId'
 
@@ -44,6 +46,15 @@ const pickWeatherError = ref('')
 const pickWeather = ref(null)
 
 const isEditingExisting = computed(() => Boolean(selectedPlanId.value))
+
+const itineraryLoading = ref(false)
+const itineraryError = ref('')
+const savingItinerary = ref(false)
+const slotByPlaceId = ref({})
+
+const aiLoading = ref(false)
+const aiError = ref('')
+const aiSummary = ref('')
 
 function todayISO() {
   const d = new Date()
@@ -116,6 +127,7 @@ async function openPlan(planId) {
   }
 
   await refreshPlaces()
+  await refreshItinerary()
 }
 
 function newPlan() {
@@ -150,6 +162,7 @@ async function savePlan() {
     saveSuccess.value = true
     await refreshPlans()
     await refreshPlaces()
+    await refreshItinerary()
   } catch (e) {
     saveError.value = e?.message || '保存失败'
   } finally {
@@ -267,6 +280,86 @@ async function refreshPlaces() {
     placesError.value = e?.message || '加载地点失败'
   } finally {
     placesLoading.value = false
+  }
+}
+
+async function refreshItinerary() {
+  itineraryError.value = ''
+  slotByPlaceId.value = {}
+  if (!selectedPlanId.value) return
+
+  itineraryLoading.value = true
+  try {
+    const items = await getItinerary(selectedPlanId.value)
+    const map = {}
+    for (const it of items) {
+      map[it.place_id] = it.time_slot
+    }
+    slotByPlaceId.value = map
+  } catch (e) {
+    itineraryError.value = e?.message || '加载行程失败'
+  } finally {
+    itineraryLoading.value = false
+  }
+}
+
+const timeSlotOptions = [
+  { value: '', label: '未安排' },
+  { value: 'morning', label: '上午' },
+  { value: 'afternoon', label: '下午' },
+  { value: 'evening', label: '晚上' },
+]
+
+function getSlot(placeId) {
+  return slotByPlaceId.value?.[placeId] || ''
+}
+
+function setSlot(placeId, slot) {
+  slotByPlaceId.value = { ...slotByPlaceId.value, [placeId]: slot }
+}
+
+async function saveSlots() {
+  if (!selectedPlanId.value) return
+  itineraryError.value = ''
+  savingItinerary.value = true
+  try {
+    const ids = (places.value || []).map((p) => p.id)
+    const items = []
+    const order = { morning: 0, afternoon: 1, evening: 2 }
+    for (const id of ids) {
+      const slot = getSlot(id)
+      if (!slot) continue
+      items.push({ place_id: id, time_slot: slot, sort_index: order[slot] ?? 0 })
+    }
+    await saveItinerary(selectedPlanId.value, items)
+    await refreshItinerary()
+  } catch (e) {
+    itineraryError.value = e?.message || '保存行程失败'
+  } finally {
+    savingItinerary.value = false
+  }
+}
+
+function placesInSlot(slot) {
+  const result = []
+  for (const p of places.value || []) {
+    if (getSlot(p.id) === slot) result.push(p)
+  }
+  return result
+}
+
+async function runAiSummary() {
+  if (!selectedPlanId.value) return
+  aiError.value = ''
+  aiSummary.value = ''
+  aiLoading.value = true
+  try {
+    const res = await generatePlanSummary(selectedPlanId.value, 'normal')
+    aiSummary.value = res.summary || ''
+  } catch (e) {
+    aiError.value = e?.message || 'AI 总结生成失败'
+  } finally {
+    aiLoading.value = false
   }
 }
 
@@ -579,6 +672,100 @@ onMounted(async () => {
                 </li>
               </ul>
             </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">行程安排（V6）</div>
+              <div class="card-subtitle">
+                把地点分配到上午/下午/晚上，保存后可刷新/重启继续查看。
+              </div>
+            </div>
+          </div>
+
+          <div v-if="!selectedPlanId" class="state">先保存一个规划再安排时间段。</div>
+          <div v-else-if="itineraryLoading" class="state">加载中…</div>
+          <div v-else-if="itineraryError" class="notice error">
+            行程加载失败：{{ itineraryError }}
+            <button class="btn small" type="button" style="margin-left: 8px" @click="refreshItinerary">重试</button>
+          </div>
+          <div v-else class="itinerary">
+            <div class="itinerary-left">
+              <div class="panel-title">给地点选择时间段</div>
+              <div v-if="places.length === 0" class="state">还没有地点。先在地图选点并加入规划。</div>
+              <div v-else class="slot-list">
+                <div v-for="pl in places" :key="pl.id" class="slot-row">
+                  <div class="slot-main">
+                    <div class="place-name">{{ pl.name || '地点' }}</div>
+                    <div class="place-sub">
+                      <span class="mono">{{ Number(pl.lng).toFixed(4) }}, {{ Number(pl.lat).toFixed(4) }}</span>
+                      <span class="chip">{{ weatherText(pl.id) }}</span>
+                    </div>
+                  </div>
+                  <select class="select" :value="getSlot(pl.id)" @change="setSlot(pl.id, $event.target.value)">
+                    <option v-for="o in timeSlotOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button class="btn primary" type="button" :disabled="savingItinerary || !selectedPlanId" @click="saveSlots">
+                  {{ savingItinerary ? '保存中…' : '保存安排' }}
+                </button>
+              </div>
+            </div>
+
+            <div class="itinerary-right">
+              <div class="panel-title">当前安排预览</div>
+              <div class="preview">
+                <div class="preview-col">
+                  <div class="preview-title">上午</div>
+                  <div v-if="placesInSlot('morning').length === 0" class="muted">未安排</div>
+                  <ul v-else class="mini-list">
+                    <li v-for="p in placesInSlot('morning')" :key="p.id">{{ p.name || '地点' }}</li>
+                  </ul>
+                </div>
+                <div class="preview-col">
+                  <div class="preview-title">下午</div>
+                  <div v-if="placesInSlot('afternoon').length === 0" class="muted">未安排</div>
+                  <ul v-else class="mini-list">
+                    <li v-for="p in placesInSlot('afternoon')" :key="p.id">{{ p.name || '地点' }}</li>
+                  </ul>
+                </div>
+                <div class="preview-col">
+                  <div class="preview-title">晚上</div>
+                  <div v-if="placesInSlot('evening').length === 0" class="muted">未安排</div>
+                  <ul v-else class="mini-list">
+                    <li v-for="p in placesInSlot('evening')" :key="p.id">{{ p.name || '地点' }}</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">AI 辅助总结（V6）</div>
+              <div class="card-subtitle">
+                AI 会基于当前规划（地点 + 天气 + 时间段 + 预算等）给出优点、风险与改进建议。
+              </div>
+            </div>
+          </div>
+
+          <div v-if="!selectedPlanId" class="state">先保存一个规划并加入地点。</div>
+          <div v-else class="ai-box">
+            <div class="form-actions">
+              <button class="btn primary" type="button" :disabled="aiLoading" @click="runAiSummary">
+                {{ aiLoading ? '生成中…' : '生成总结' }}
+              </button>
+            </div>
+            <div v-if="aiError" class="notice error">生成失败：{{ aiError }}</div>
+            <div v-else-if="aiSummary" class="ai-result">{{ aiSummary }}</div>
+            <div v-else class="muted">点击“生成总结”。</div>
           </div>
         </div>
       </section>
@@ -934,6 +1121,80 @@ onMounted(async () => {
   color: var(--text-h);
 }
 
+.itinerary {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 14px;
+}
+
+.slot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.slot-row {
+  display: grid;
+  grid-template-columns: 1fr 140px;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--text-h);
+  background: transparent;
+}
+
+.preview {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+}
+
+.preview-col {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.preview-title {
+  font-family: var(--heading);
+  color: var(--text-h);
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.mini-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+.ai-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-result {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  color: var(--text-h);
+}
+
 .place-addr {
   font-size: 12px;
   color: var(--text);
@@ -951,6 +1212,12 @@ onMounted(async () => {
     grid-template-columns: 1fr;
   }
   .map-wrap {
+    grid-template-columns: 1fr;
+  }
+  .itinerary {
+    grid-template-columns: 1fr;
+  }
+  .slot-row {
     grid-template-columns: 1fr;
   }
 }

@@ -26,4 +26,3 @@ export function getPlanLiveWeathers(planId) {
 export function getLiveWeatherByAdcode(adcode) {
   return http('GET', `/api/weather/live?adcode=${encodeURIComponent(adcode)}`)
 }
-
