@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { createPlan, getPlan, listPlans, updatePlan } from '../api/plans'
+import { addPlace, deletePlace, listPlaces } from '../api/places'
 
 const LAST_OPEN_PLAN_ID_KEY = 'lab3.lastOpenPlanId'
 
@@ -23,6 +24,14 @@ const form = reactive({
   people_count: '',
   preferences: '',
 })
+
+const amapReady = ref(false)
+const mapError = ref('')
+const selectedPlace = ref(null)
+const places = ref([])
+const placesLoading = ref(false)
+const placesError = ref('')
+const addingPlace = ref(false)
 
 const isEditingExisting = computed(() => Boolean(selectedPlanId.value))
 
@@ -95,6 +104,8 @@ async function openPlan(planId) {
   } finally {
     planLoading.value = false
   }
+
+  await refreshPlaces()
 }
 
 function newPlan() {
@@ -128,6 +139,7 @@ async function savePlan() {
 
     saveSuccess.value = true
     await refreshPlans()
+    await refreshPlaces()
   } catch (e) {
     saveError.value = e?.message || '保存失败'
   } finally {
@@ -137,9 +149,135 @@ async function savePlan() {
 
 const emptyList = computed(() => !listLoading.value && !listError.value && plans.value.length === 0)
 const nextStepText = computed(() => {
-  if (!selectedPlanId.value) return '下一步：保存规划后，再进入 V4（地点管理：地图选点加入规划）。'
-  return '下一步：进入 V4（地点管理：地图选点加入规划）。'
+  if (!selectedPlanId.value) return '下一步：保存规划后，在下方地图选点并加入规划（V4）。'
+  return '下一步：在下方地图选点并加入规划（V4）。'
 })
+
+function initAmap() {
+  const key = import.meta.env.VITE_AMAP_KEY
+  const jsCode = import.meta.env.VITE_AMAP_SECURITY_JS_CODE
+
+  if (!key || !jsCode) {
+    mapError.value = '未配置高德地图 Key。请在 frontend/.env.local 中设置 VITE_AMAP_KEY 和 VITE_AMAP_SECURITY_JS_CODE。'
+    return
+  }
+
+  if (typeof window.AMapLoader === 'undefined') {
+    mapError.value = '未加载高德 AMapLoader。请检查 index.html 是否引入 loader.js。'
+    return
+  }
+
+  window._AMapSecurityConfig = { securityJsCode: jsCode }
+
+  window.AMapLoader.load({
+    key,
+    version: '2.0',
+    plugins: ['AMap.Geocoder'],
+  })
+    .then((AMap) => {
+      amapReady.value = true
+      const map = new AMap.Map('amap', {
+        zoom: 11,
+        center: [121.473667, 31.230525],
+        viewMode: '2D',
+      })
+
+      const geocoder = new AMap.Geocoder({ city: '全国' })
+      let marker = null
+
+      map.on('click', (e) => {
+        const lng = e.lnglat.getLng()
+        const lat = e.lnglat.getLat()
+
+        if (marker) map.remove(marker)
+        marker = new AMap.Marker({ position: [lng, lat] })
+        map.add(marker)
+
+        selectedPlace.value = {
+          name: '选中地点',
+          address: '解析中…',
+          lng,
+          lat,
+          adcode: null,
+        }
+
+        geocoder.getAddress([lng, lat], (status, result) => {
+          if (status === 'complete' && result?.info === 'OK') {
+            const addr = result.regeocode?.formattedAddress || '未知地点'
+            const adcode = result.regeocode?.addressComponent?.adcode || null
+            selectedPlace.value = {
+              name: result.regeocode?.addressComponent?.building?.name || '选中地点',
+              address: addr,
+              lng,
+              lat,
+              adcode,
+            }
+          } else {
+            selectedPlace.value = {
+              name: '选中地点',
+              address: '逆地理编码失败',
+              lng,
+              lat,
+              adcode: null,
+            }
+          }
+        })
+      })
+    })
+    .catch((err) => {
+      console.error(err)
+      mapError.value = '地图加载失败：请检查 Key/安全密钥/白名单配置。'
+    })
+}
+
+async function refreshPlaces() {
+  placesError.value = ''
+  places.value = []
+  if (!selectedPlanId.value) return
+
+  placesLoading.value = true
+  try {
+    places.value = await listPlaces(selectedPlanId.value)
+  } catch (e) {
+    placesError.value = e?.message || '加载地点失败'
+  } finally {
+    placesLoading.value = false
+  }
+}
+
+const canAddPlace = computed(() => Boolean(selectedPlanId.value && selectedPlace.value && selectedPlace.value.address && selectedPlace.value.address !== '解析中…'))
+
+async function addSelectedPlace() {
+  if (!canAddPlace.value) return
+  addingPlace.value = true
+  placesError.value = ''
+  try {
+    const payload = {
+      name: selectedPlace.value.name || '选中地点',
+      address: selectedPlace.value.address || null,
+      lng: selectedPlace.value.lng,
+      lat: selectedPlace.value.lat,
+      adcode: selectedPlace.value.adcode || null,
+    }
+    await addPlace(selectedPlanId.value, payload)
+    await refreshPlaces()
+  } catch (e) {
+    placesError.value = e?.message || '加入地点失败'
+  } finally {
+    addingPlace.value = false
+  }
+}
+
+async function removePlace(placeId) {
+  if (!selectedPlanId.value) return
+  placesError.value = ''
+  try {
+    await deletePlace(selectedPlanId.value, placeId)
+    await refreshPlaces()
+  } catch (e) {
+    placesError.value = e?.message || '删除失败'
+  }
+}
 
 onMounted(async () => {
   resetForm()
@@ -149,6 +287,8 @@ onMounted(async () => {
   if (lastId) {
     await openPlan(lastId)
   }
+
+  initAmap()
 })
 </script>
 
@@ -157,7 +297,7 @@ onMounted(async () => {
     <header class="topbar">
       <div class="brand">
         <div class="title">智能出行规划器</div>
-        <div class="subtitle">V3：规划表单 + 打开/保存</div>
+        <div class="subtitle">V4：地点管理（地图选点加入规划）</div>
       </div>
       <div class="top-actions">
         <button class="btn" type="button" @click="newPlan">新建规划</button>
@@ -272,6 +412,79 @@ onMounted(async () => {
               保存失败：{{ saveError }}
             </div>
           </form>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">地点管理（V4）</div>
+              <div class="card-subtitle">
+                先在地图上点选地点，然后点击“加入规划”。地点会保存到后端 SQLite，可刷新/重启后继续查看。
+              </div>
+            </div>
+            <div class="badge" v-if="selectedPlanId">
+              当前规划：{{ selectedPlanId.slice(0, 8) }}
+            </div>
+          </div>
+
+          <div v-if="mapError" class="notice error">
+            {{ mapError }}
+          </div>
+
+          <div v-else class="map-wrap">
+            <div id="amap" class="map" :data-ready="amapReady ? 'true' : 'false'"></div>
+            <div class="map-side">
+              <div class="panel-title">当前选点</div>
+              <div v-if="!selectedPlace" class="state">
+                在地图上点击一个位置。
+              </div>
+              <div v-else class="pick">
+                <div class="pick-row">
+                  <div class="k">经纬度</div>
+                  <div class="v mono">
+                    {{ selectedPlace.lng.toFixed(6) }}, {{ selectedPlace.lat.toFixed(6) }}
+                  </div>
+                </div>
+                <div class="pick-row">
+                  <div class="k">地址</div>
+                  <div class="v">{{ selectedPlace.address }}</div>
+                </div>
+                <div class="pick-row" v-if="selectedPlace.adcode">
+                  <div class="k">adcode</div>
+                  <div class="v mono">{{ selectedPlace.adcode }}</div>
+                </div>
+                <button class="btn primary" type="button" :disabled="!canAddPlace || addingPlace" @click="addSelectedPlace">
+                  {{ addingPlace ? '加入中…' : selectedPlanId ? '加入规划' : '请先保存规划' }}
+                </button>
+              </div>
+
+              <div class="panel-title" style="margin-top: 16px">地点列表</div>
+              <div v-if="!selectedPlanId" class="state">
+                先保存一个规划，再把地点加入规划。
+              </div>
+              <div v-else-if="placesLoading" class="state">加载中…</div>
+              <div v-else-if="placesError" class="state error">
+                <div>加载失败：{{ placesError }}</div>
+                <button class="btn small" type="button" @click="refreshPlaces">重试</button>
+              </div>
+              <div v-else-if="places.length === 0" class="state">
+                还没有地点。点击地图选点并“加入规划”。
+              </div>
+              <ul v-else class="place-list">
+                <li v-for="pl in places" :key="pl.id" class="place-item">
+                  <div class="place-main">
+                    <div class="place-name">{{ pl.name || '地点' }}</div>
+                    <div class="place-sub">
+                      <span class="mono">{{ Number(pl.lng).toFixed(4) }}, {{ Number(pl.lat).toFixed(4) }}</span>
+                      <span v-if="pl.adcode" class="mono">adcode {{ pl.adcode }}</span>
+                    </div>
+                    <div class="place-addr" v-if="pl.address">{{ pl.address }}</div>
+                  </div>
+                  <button class="btn small" type="button" @click="removePlace(pl.id)">删除</button>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -535,6 +748,91 @@ onMounted(async () => {
   color: var(--text);
 }
 
+.map-wrap {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 14px;
+}
+
+.map {
+  height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--social-bg);
+}
+
+.map-side {
+  text-align: left;
+}
+
+.pick {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pick-row .k {
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.pick-row .v {
+  color: var(--text-h);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.place-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.place-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.place-main {
+  min-width: 0;
+}
+
+.place-name {
+  color: var(--text-h);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.place-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.place-addr {
+  font-size: 12px;
+  color: var(--text);
+}
+
 @media (max-width: 980px) {
   .main {
     grid-template-columns: 1fr;
@@ -544,6 +842,9 @@ onMounted(async () => {
     border-bottom: 1px solid var(--border);
   }
   .grid {
+    grid-template-columns: 1fr;
+  }
+  .map-wrap {
     grid-template-columns: 1fr;
   }
 }
