@@ -172,8 +172,8 @@ async function savePlan() {
 
 const emptyList = computed(() => !listLoading.value && !listError.value && plans.value.length === 0)
 const nextStepText = computed(() => {
-  if (!selectedPlanId.value) return '下一步：保存规划后，在下方地图选点并加入规划（V4）。'
-  return '下一步：在下方地图选点并加入规划（V4）。'
+  if (!selectedPlanId.value) return '先保存规划，再添加地点。'
+  return '已打开规划：可添加地点并安排时间段。'
 })
 
 function initAmap() {
@@ -474,10 +474,10 @@ onMounted(async () => {
     <header class="topbar">
       <div class="brand">
         <div class="title">智能出行规划器</div>
-        <div class="subtitle">V4：地点管理（地图选点加入规划）</div>
+        <div class="subtitle">出行规划</div>
       </div>
       <div class="top-actions">
-        <button class="btn" type="button" @click="newPlan">新建规划</button>
+        <button class="btn" type="button" @click="newPlan">新建</button>
         <button class="btn primary" type="button" :disabled="saving || planLoading" @click="savePlan">
           {{ saving ? '保存中…' : '保存' }}
         </button>
@@ -493,10 +493,7 @@ onMounted(async () => {
           <div>加载失败：{{ listError }}</div>
           <button class="btn small" type="button" @click="refreshPlans">重试</button>
         </div>
-        <div v-else-if="emptyList" class="state">
-          <div>还没有任何规划。</div>
-          <div class="muted">点击“新建规划”开始。</div>
-        </div>
+        <div v-else-if="emptyList" class="state">暂无规划</div>
 
         <ul v-else class="plan-list">
           <li v-for="p in plans" :key="p.id">
@@ -527,9 +524,7 @@ onMounted(async () => {
               <div class="card-title">
                 {{ isEditingExisting ? '编辑规划' : '新建规划' }}
               </div>
-              <div class="card-subtitle">
-                {{ nextStepText }}
-              </div>
+              <div class="card-subtitle">{{ nextStepText }}</div>
             </div>
 
             <div class="badge" v-if="selectedPlanId">
@@ -548,7 +543,7 @@ onMounted(async () => {
           <form v-else class="form" @submit.prevent="savePlan">
             <div class="grid">
               <label class="field">
-                <span class="label">日期（必填）</span>
+                <span class="label">日期</span>
                 <input class="input" type="date" v-model="form.date" required />
               </label>
 
@@ -563,14 +558,14 @@ onMounted(async () => {
               </label>
 
               <label class="field">
-                <span class="label">标题（可选）</span>
-                <input class="input" type="text" maxlength="120" v-model="form.title" placeholder="例如：周末出游" />
+                <span class="label">标题</span>
+                <input class="input" type="text" maxlength="120" v-model="form.title" placeholder="周末出游" />
               </label>
             </div>
 
             <label class="field">
               <span class="label">偏好</span>
-              <textarea class="textarea" rows="5" maxlength="2000" v-model="form.preferences" placeholder="例如：喜欢自然景点、尽量少走路、想吃本地小吃…"></textarea>
+              <textarea class="textarea" rows="4" maxlength="2000" v-model="form.preferences" placeholder="自然景点 / 少走路 / 小吃…"></textarea>
             </label>
 
             <div class="form-actions">
@@ -583,7 +578,7 @@ onMounted(async () => {
             </div>
 
             <div v-if="saveSuccess" class="notice success">
-              已保存。刷新页面后会自动打开你最后编辑的规划。
+              已保存
             </div>
             <div v-else-if="saveError" class="notice error">
               保存失败：{{ saveError }}
@@ -594,10 +589,8 @@ onMounted(async () => {
         <div class="card">
           <div class="card-header">
             <div>
-              <div class="card-title">地点管理（V4）</div>
-              <div class="card-subtitle">
-                先在地图上点选地点，然后点击“加入规划”。地点会保存到后端 SQLite，可刷新/重启后继续查看。
-              </div>
+              <div class="card-title">地点</div>
+              <div class="card-subtitle">选点后加入</div>
             </div>
             <div class="badge" v-if="selectedPlanId">
               当前规划：{{ selectedPlanId.slice(0, 8) }}
@@ -611,9 +604,9 @@ onMounted(async () => {
           <div v-else class="map-wrap">
             <div id="amap" class="map" :data-ready="amapReady ? 'true' : 'false'"></div>
             <div class="map-side">
-              <div class="panel-title">当前选点</div>
+              <div class="panel-title">选点</div>
               <div v-if="!selectedPlace" class="state">
-                在地图上点击一个位置。
+                点击地图
               </div>
               <div v-else class="pick">
                 <div class="pick-row">
@@ -637,13 +630,13 @@ onMounted(async () => {
                   </div>
                 </div>
                 <button class="btn primary" type="button" :disabled="!canAddPlace || addingPlace" @click="addSelectedPlace">
-                  {{ addingPlace ? '加入中…' : selectedPlanId ? '加入规划' : '请先保存规划' }}
+                  {{ addingPlace ? '加入中…' : selectedPlanId ? '加入' : '先保存规划' }}
                 </button>
               </div>
 
-              <div class="panel-title" style="margin-top: 16px">地点列表</div>
+              <div class="panel-title" style="margin-top: 16px">列表</div>
               <div v-if="!selectedPlanId" class="state">
-                先保存一个规划，再把地点加入规划。
+                先保存规划
               </div>
               <div v-else-if="placesLoading" class="state">加载中…</div>
               <div v-else-if="placesError" class="state error">
@@ -651,7 +644,7 @@ onMounted(async () => {
                 <button class="btn small" type="button" @click="refreshPlaces">重试</button>
               </div>
               <div v-else-if="places.length === 0" class="state">
-                还没有地点。点击地图选点并“加入规划”。
+                暂无地点
               </div>
               <div v-else-if="weatherError" class="notice error" style="margin-bottom: 10px">
                 天气加载失败：{{ weatherError }}
@@ -678,10 +671,8 @@ onMounted(async () => {
         <div class="card">
           <div class="card-header">
             <div>
-              <div class="card-title">行程安排（V6）</div>
-              <div class="card-subtitle">
-                把地点分配到上午/下午/晚上，保存后可刷新/重启继续查看。
-              </div>
+              <div class="card-title">行程安排</div>
+              <div class="card-subtitle">把地点分配到上午 / 下午 / 晚上</div>
             </div>
           </div>
 
@@ -749,10 +740,8 @@ onMounted(async () => {
         <div class="card">
           <div class="card-header">
             <div>
-              <div class="card-title">AI 辅助总结（V6）</div>
-              <div class="card-subtitle">
-                AI 会基于当前规划（地点 + 天气 + 时间段 + 预算等）给出优点、风险与改进建议。
-              </div>
+              <div class="card-title">AI 总结</div>
+              <div class="card-subtitle">基于当前规划自动生成建议</div>
             </div>
           </div>
 
@@ -760,12 +749,12 @@ onMounted(async () => {
           <div v-else class="ai-box">
             <div class="form-actions">
               <button class="btn primary" type="button" :disabled="aiLoading" @click="runAiSummary">
-                {{ aiLoading ? '生成中…' : '生成总结' }}
+                {{ aiLoading ? '生成中…' : '生成' }}
               </button>
             </div>
             <div v-if="aiError" class="notice error">生成失败：{{ aiError }}</div>
             <div v-else-if="aiSummary" class="ai-result">{{ aiSummary }}</div>
-            <div v-else class="muted">点击“生成总结”。</div>
+            <div v-else class="muted">—</div>
           </div>
         </div>
       </section>
@@ -774,6 +763,11 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.app-shell {
+  background: radial-gradient(1200px 700px at 15% 0%, rgba(170, 59, 255, 0.10), transparent 55%),
+    radial-gradient(900px 650px at 85% 10%, rgba(34, 197, 94, 0.08), transparent 55%);
+}
+
 .app-shell {
   min-height: 100svh;
   display: flex;
@@ -788,16 +782,16 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 20px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: blur(10px);
 }
 
 .brand .title {
   font-family: var(--heading);
   color: var(--text-h);
-  font-size: 18px;
+  font-size: 17px;
   letter-spacing: -0.2px;
 }
 .brand .subtitle {
@@ -824,12 +818,15 @@ onMounted(async () => {
 
 .sidebar {
   border-right: 1px solid var(--border);
-  padding: 18px;
+  padding: 16px;
   text-align: left;
 }
 
 .content {
-  padding: 18px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .panel-title {
@@ -885,6 +882,8 @@ onMounted(async () => {
   border-radius: 12px;
   padding: 16px;
   text-align: left;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  box-shadow: var(--shadow);
 }
 
 .card-header {
@@ -971,6 +970,14 @@ onMounted(async () => {
   box-shadow: var(--shadow);
 }
 
+.btn:focus-visible,
+.input:focus-visible,
+.textarea:focus-visible,
+.select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -992,6 +999,11 @@ onMounted(async () => {
   border-radius: 12px;
   padding: 12px;
   color: var(--text);
+}
+
+.state,
+.notice {
+  backdrop-filter: blur(6px);
 }
 
 .state.error {
@@ -1037,11 +1049,12 @@ onMounted(async () => {
 }
 
 .map {
-  height: 420px;
+  height: 380px;
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
   background: var(--social-bg);
+  box-shadow: var(--shadow);
 }
 
 .map-side {
@@ -1117,7 +1130,7 @@ onMounted(async () => {
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--accent-bg) 55%, transparent);
+  background: color-mix(in srgb, var(--accent-bg) 65%, transparent);
   color: var(--text-h);
 }
 
