@@ -1,7 +1,7 @@
-<script setup>
-import HelloWorld from './components/HelloWorld.vue'
-</script>
-
 <template>
-  <HelloWorld />
+  <PlanPage />
 </template>
+
+<script setup>
+import PlanPage from './pages/PlanPage.vue'
+</script>
