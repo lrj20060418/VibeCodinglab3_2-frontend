@@ -5,6 +5,8 @@ import { addPlace, deletePlace, listPlaces } from '../api/places'
 import { getLiveWeatherByAdcode, getPlanLiveWeathers } from '../api/weather'
 import { getItinerary, saveItinerary } from '../api/itinerary'
 import { generatePlanSummary } from '../api/ai'
+import { exportPlan, downloadJson, downloadText } from '../api/export'
+import { getPlanChecks } from '../api/checks'
 
 const LAST_OPEN_PLAN_ID_KEY = 'lab3.lastOpenPlanId'
 
@@ -55,6 +57,40 @@ const slotByPlaceId = ref({})
 const aiLoading = ref(false)
 const aiError = ref('')
 const aiSummary = ref('')
+
+const checksLoading = ref(false)
+const checksError = ref('')
+const checks = ref([])
+
+async function refreshChecks() {
+  checksError.value = ''
+  checks.value = []
+  if (!selectedPlanId.value) return
+  checksLoading.value = true
+  try {
+    const res = await getPlanChecks(selectedPlanId.value)
+    checks.value = res.issues || []
+  } catch (e) {
+    checksError.value = e?.message || '规则检查失败'
+  } finally {
+    checksLoading.value = false
+  }
+}
+
+async function runExport(format) {
+  if (!selectedPlanId.value) return
+  try {
+    const res = await exportPlan(selectedPlanId.value, format)
+    const title = form.title?.trim() || 'plan'
+    if (format === 'md') {
+      downloadText(`${title}.md`, res.content || '')
+    } else {
+      downloadJson(`${title}.json`, res.content || {})
+    }
+  } catch (e) {
+    alert(e?.message || '导出失败')
+  }
+}
 
 function todayISO() {
   const d = new Date()
@@ -128,6 +164,7 @@ async function openPlan(planId) {
 
   await refreshPlaces()
   await refreshItinerary()
+  await refreshChecks()
 }
 
 function newPlan() {
@@ -163,6 +200,7 @@ async function savePlan() {
     await refreshPlans()
     await refreshPlaces()
     await refreshItinerary()
+    await refreshChecks()
   } catch (e) {
     saveError.value = e?.message || '保存失败'
   } finally {
@@ -230,8 +268,17 @@ function initAmap() {
           if (status === 'complete' && result?.info === 'OK') {
             const addr = result.regeocode?.formattedAddress || '未知地点'
             const adcode = result.regeocode?.addressComponent?.adcode || null
+            const poiName = result.regeocode?.pois?.[0]?.name
+            const buildingName = result.regeocode?.addressComponent?.building?.name
+            const neighborhoodName = result.regeocode?.addressComponent?.neighborhood?.name
+            const name =
+              poiName ||
+              buildingName ||
+              neighborhoodName ||
+              (typeof addr === 'string' ? addr.split(' ').slice(-1)[0] : null) ||
+              '选中地点'
             selectedPlace.value = {
-              name: result.regeocode?.addressComponent?.building?.name || '选中地点',
+              name,
               address: addr,
               lng,
               lat,
@@ -333,6 +380,7 @@ async function saveSlots() {
     }
     await saveItinerary(selectedPlanId.value, items)
     await refreshItinerary()
+    await refreshChecks()
   } catch (e) {
     itineraryError.value = e?.message || '保存行程失败'
   } finally {
@@ -438,6 +486,7 @@ async function addSelectedPlace() {
     }
     await addPlace(selectedPlanId.value, payload)
     await refreshPlaces()
+    await refreshChecks()
   } catch (e) {
     placesError.value = e?.message || '加入地点失败'
   } finally {
@@ -451,6 +500,7 @@ async function removePlace(placeId) {
   try {
     await deletePlace(selectedPlanId.value, placeId)
     await refreshPlaces()
+    await refreshChecks()
   } catch (e) {
     placesError.value = e?.message || '删除失败'
   }
@@ -481,6 +531,8 @@ onMounted(async () => {
         <button class="btn primary" type="button" :disabled="saving || planLoading" @click="savePlan">
           {{ saving ? '保存中…' : '保存' }}
         </button>
+        <button class="btn" type="button" :disabled="!selectedPlanId" @click="runExport('md')">导出 MD</button>
+        <button class="btn" type="button" :disabled="!selectedPlanId" @click="runExport('json')">导出 JSON</button>
       </div>
     </header>
 
@@ -751,10 +803,23 @@ onMounted(async () => {
               <button class="btn primary" type="button" :disabled="aiLoading" @click="runAiSummary">
                 {{ aiLoading ? '生成中…' : '生成' }}
               </button>
+              <button class="btn" type="button" :disabled="checksLoading" @click="refreshChecks">
+                {{ checksLoading ? '检查中…' : '规则检查' }}
+              </button>
             </div>
             <div v-if="aiError" class="notice error">生成失败：{{ aiError }}</div>
             <div v-else-if="aiSummary" class="ai-result">{{ aiSummary }}</div>
             <div v-else class="muted">—</div>
+
+            <div v-if="checksError" class="notice error" style="margin-top: 10px">
+              检查失败：{{ checksError }}
+            </div>
+            <div v-else-if="checks.length" class="checks" style="margin-top: 10px">
+              <div v-for="c in checks" :key="c.code" class="check" :data-level="c.level">
+                <div class="check-title">{{ c.title }}</div>
+                <div v-if="c.detail" class="check-detail">{{ c.detail }}</div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -1206,6 +1271,35 @@ onMounted(async () => {
   white-space: pre-wrap;
   line-height: 1.5;
   color: var(--text-h);
+}
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.check {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.check[data-level='warn'] {
+  border-color: color-mix(in srgb, #f59e0b 45%, var(--border));
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+}
+
+.check-title {
+  font-size: 13px;
+  color: var(--text-h);
+  font-weight: 500;
+}
+
+.check-detail {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text);
 }
 
 .place-addr {
